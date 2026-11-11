@@ -1,23 +1,31 @@
-# psbfile 模块迁移
+# psbfile Module Migration
 
+<<<<<<<< Updated upstream:.agents/notes/proposed/architecture/2026-11-03-rust-psbfile.md
 Status: proposed
 
 方案材料：本页包含待实施的接口或目录设计，不能作为当前构建与可用功能说明；事实以源码及 docs 为准。
 
 [← Rust 层索引](2026-11-03-rust-overview.md)
+========
+[← Rust layer index](../README.md)
+>>>>>>>> Stashed changes:docs/rust/modules/psbfile.md
 
-| 项 | 路径 |
-|----|------|
-| C++ 胶水 | `cpp/plugins/psbfile/` |
+| Item | Path |
+|------|------|
+| C++ glue | `cpp/plugins/psbfile/` |
 | Rust crate | `rust/crates/krkr-psb` |
-| C 头 | `bridge/include/krkr/psb.h` |
-| 消费者 | `motionplayer` → `PSB::PSBFile` |
+| C header | `bridge/include/krkr/psb.h` |
+| Consumer | `motionplayer` → `PSB::PSBFile` |
 
+<<<<<<<< Updated upstream:.agents/notes/proposed/architecture/2026-11-03-rust-psbfile.md
 通用规则见 [../ffi.md](2026-11-03-rust-ffi.md)、[../dependencies.md](2026-11-03-rust-dependencies.md)、[../build.md](2026-11-03-rust-build.md)。
+========
+General rules: [../ffi.md](../ffi.md), [../dependencies.md](../dependencies.md), [../build.md](../build.md).
+>>>>>>>> Stashed changes:docs/rust/modules/psbfile.md
 
 ---
 
-## 1. 架构位置
+## 1. Position in the architecture
 
 ```text
 cpp/plugins/psbfile/
@@ -30,19 +38,19 @@ rust/crates/krkr-psb/
 
 ---
 
-## 2. 职责拆分
+## 2. Responsibility split
 
-| 保留 C++ | 迁到 Rust |
-|----------|-----------|
-| ncbind、`PSBMedia`、`PSBFile` 壳 | 解析、解压、chunk 表 |
-| `types/*`（二期） | zlib、RL、Emote LZ4 流 |
-| stream → `vector<uint8_t>` | seed、decrypt |
+| Stays in C++ | Moves to Rust |
+|--------------|---------------|
+| ncbind, `PSBMedia`, the `PSBFile` shell | Parsing, decompression, chunk tables |
+| `types/*` (phase 2) | zlib, RL, Emote LZ4 streams |
+| stream → `vector<uint8_t>` | seed, decrypt |
 
 ---
 
 ## 3. C API
 
-符号前缀 **`krkr_psb_`**。
+Symbol prefix: **`krkr_psb_`**.
 
 ```c
 KrkrPsbDoc* krkr_psb_open_memory(const uint8_t* data, size_t len, int32_t seed);
@@ -61,23 +69,23 @@ target_link_libraries(psbfile PRIVATE Krkr::Rust::psb)
 
 ---
 
-## 5. 迁移阶段
+## 5. Migration phases
 
-| 阶段 | 内容 | 验收 |
-|------|------|------|
-| P0 | workspace + `KrkrRust.cmake` + 空 crate | 全平台链接 |
-| P1 | 头 + chunk 表 | `psbfile-dll` |
+| Phase | Contents | Acceptance |
+|-------|----------|------------|
+| P0 | workspace + `KrkrRust.cmake` + empty crate | links on all platforms |
+| P1 | headers + chunk table | `psbfile-dll` |
 | P2 | offset API | `motionplayer-dll` |
-| P3 | 解压 | 字节 diff |
-| P4 | 删 C++ 解析 | NEKOPARA 夹具 |
-| P5 | CLI、types | JSON diff |
+| P3 | decompression | byte diff |
+| P4 | delete C++ parser | NEKOPARA fixture |
+| P5 | CLI, types | JSON diff |
 
 ---
 
-## 6. 测试
+## 6. Tests
 
-| 层级 | 位置 |
-|------|------|
+| Layer | Location |
+|-------|----------|
 | Rust | `rust/crates/krkr-psb/tests/` |
 | C++ | `tests/unit-tests/plugins/psbfile-dll.cpp` |
-| 集成 | `motionplayer-dll` |
+| Integration | `motionplayer-dll` |

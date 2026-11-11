@@ -1,70 +1,176 @@
-# 当前架构与代码导航
+# KrKr2 Emulator — Architecture
 
-核对日期：2026-11-03。初批构建瘦身基于 `853ec7d`，归档续批基于 `f4d3e2a`，实际改动与验证见[实施记录](../.agents/notes/implemented/simplification/2026-11-01-dependency-slimming.md)。以下描述本仓库实现，不代表外部二开仓库。后续实现变化应同步更新。
+> Status: living document (2026-11). Corresponds to the tree as of the core-module decoupling work
+> (Phases 1–3 done, see [CORE_MODULE_DECOUPLING.md](CORE_MODULE_DECOUPLING.md)).
 
-## 运行链路
+The KrKr2 emulator reimplements the **KiriKiri / TVP2** visual novel engine so games shipped as
+Windows programs run natively on Windows, Linux, macOS, and Android. It is **not** an x86 emulator:
+instead of executing the game's `.exe`, it re-hosts the game's data (scripts, XP3 archives,
+assets) on a portable reimplementation of the engine and of the plugin DLLs games depend on.
 
-```text
-platforms 启动 → environ/cocos2d 应用壳、UI 与窗口
-                         ↓
-          base 脚本管理 / 事件 / KAG → tjs2
-                         ↓
-     visual 图层与绘制 / sound / movie / 原生插件
-                         ↓
-          io 文件后端 / storage / archive
+```
+┌────────────────────────────────────────────────────────────────┐
+│ platforms/<os>/main.cpp        → cocos2d-x GL window, spdlog   │
+│ cpp/core/environ/cocos2d/      → AppDelegate, MainScene, UI    │
+│ ┌──────────────────────────────────────────────────────────┐   │
+│ │ tTVPApplication::StartApplication (environ/Application)  │   │
+│ │  TJS2 engine init → file backends → archives →           │   │
+│ │  tvpLoadPlugins() → System init → startup.tjs            │   │
+│ └──────────────────────────────────────────────────────────┘   │
+│ cpp/core/{tjs2,base,io,storage,archive,visual,sound,movie,…}   │
+│ cpp/plugins/* — built-in replacements for KiriKiri plugin DLLs │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-这是职责示意，当前模块链接仍有互依赖，不是已经实现的单向分层。
-Desktop 启动先经过 `environ/launch/` 的纯参数/路径解析与引擎适配；指定目标时
-适配器在 GTK/GL 初始化前校验归档，`AppDelegate` 在场景就绪后直调 `MainScene::startupFrom`，
-无目标仍保留原选择器。现状及命令见 [Desktop CLI](subsystems/desktop-cli.md)。移动端启动路径未迁移。
-Windows 入口 `platforms/windows/main.cpp` 创建 TVPAppDelegate；脚本入口在
-`cpp/core/base/ScriptMgnIntf.cpp`，包含源码执行、表达式、字节码加载及存储加载。
+## 1. Repository layout
 
-## 按问题定位
+| Path | Role |
+|------|------|
+| `platforms/apple/macos/main.cpp` | macOS entry point (also `linux/`, `windows/`, `android/cpp/`) |
+| `cpp/core/` | Engine core, split into CMake library modules (below) |
+| `cpp/plugins/` | Built-in reimplementations of Windows plugin DLLs (`krkr2plugin` static lib) |
+| `cpp/external/` | Vendored minizip, libbpg |
+| `ui/cocos-studio/` | UI forms (`.csb`), fonts, `locale/{en_us,zh_cn}.xml` |
+| `tools/xp3/` | Standalone XP3 extractor; links only `tjs2 + core_io + core_storage_tool` |
+| `tests/unit-tests/` | Catch2 tests: `core/tjs2`, `core/movie`, `core/visual`, `plugins` |
+| `vcpkg.json` | Dependencies: cocos2dx, ffmpeg, openal-soft, opencv4, spdlog, fmt, catch2, 7zip, libarchive, unrar, oniguruma, boost-*, … |
 
-| 问题 | 优先阅读 |
-|---|---|
-| 启动、窗口、输入、模拟器界面 | `cpp/core/environ/cocos2d/`、`environ/impl/TVPWindow.*`、`environ/ui/`、`visual/impl/WindowImpl.*` |
-| 脚本错误、宿主回调 | `base/ScriptMgnIntf.*`、`tjs2/tjsInterface.h`、`tjs2/tjsNative.*`、`tjs2/tjsInterCodeExec.cpp` |
-| 图层混合、缩放、透视、纹理 | `visual/RenderManager.*`、`visual/ogl/RenderManager_ogl.cpp`、`visual/LayerBitmap*`、`visual/impl/DrawDevice.*` |
-| 文件路径、归档和解包 | `io/`、`storage/impl/`、`archive/`、`base/StorageIntf.cpp`、`tools/xp3/` |
-| 视频画面/同步 | `movie/ffmpeg/`、`environ/cocos2d/YUVSprite.*`、`visual/impl/VideoOvlImpl.cpp` |
-| 插件/角色动画 | `core/plugin/`、`plugins/`、`plugins/motionplayer/docs/` |
+## 2. Core modules (`cpp/core/`)
 
-表内缩写路径相对 `cpp/core/`，`plugins/` 指 `cpp/plugins/`。
+| Module (CMake target) | Purpose |
+|------------------------|---------|
+| `tjs2` | The TJS2 scripting language: compiler (bison grammar in `tjs2/bison/`), VM, `ttstr`/variant types, date/regex. Scripts in `tjs2/script/` |
+| `core_io` | `tTJSBinaryStream` + `IFileBackend` abstraction (`StdFileBackend`, `LocalFileBackend`, `MobileFileBackend`) |
+| `core_storage` / `core_storage_tool` | VFS on top of archives + local dirs: `StorageIntf`, `UtilStreams`, `ArchiveRegistry` (register-per-format creator functions); `core_storage_tool` is the minimal variant linked by tools |
+| `archive_xp3` / `archive_zip` / `archive_7z` / `archive_tar` | Archive format readers (`cpp/core/archive/*`); XP3 is the native KiriKiri format |
+| `core_base_module` (`base/`) | Engine interfaces & glue: `ScriptMgnIntf` (script exec), `SysInitIntf`, `SystemIntf`, `EventIntf`, `MsgIntf`, `KAGParser` (KAG scenario tags), `StorageImpl` (in `base/impl/`), `CharacterSet` |
+| `core_plugin_module` (`plugin/`) | Plugin service: `ncbind` registration framework + `PluginImpl` (`Plugins.link` dispatch) |
+| `core_visual_module` (`visual/`) | Layers, bitmaps, drawing devices, GL renderers (`visual/gl`, `visual/ogl`) |
+| `core_sound_module` (`sound/`) | Wave playback, mixing (FMOD/OpenAL paths) |
+| `core_movie_module` (`movie/`) | Video playback via FFmpeg (`movie/ffmpeg/`, AE* audio classes) |
+| `core_environ_module` (`environ/`) | Platform integration + application: `Application.cpp` (engine bootstrap), `cocos2d/` (AppDelegate, MainScene, key mapping, custom FileUtils), `ui/` (all in-emulator UI forms), `ConfigManager/`, per-OS `Platform` impls (`apple/macos/platform.mm`, `linux/Platform.cpp`, `win32/Platform.cpp`, `android/`), `sdl/`, `impl/` (`TVPWindow`, `SystemControl`), `XP3ArchiveRepack` |
+| `core_utils_module` (`utils/`) | Threads, tick counts, MD5, encoding/iconv helpers |
+| `core_extension_module`, `core_msg` | Extensions and message strings |
 
-## 依赖事实
+`krkr2core` (INTERFACE) and `krkr2plugin` (STATIC) aggregate everything for the app target.
+Historical context: `core_base_module` used to pull in the whole engine; the decoupling refactor
+([CORE_MODULE_DECOUPLING.md](CORE_MODULE_DECOUPLING.md)) introduced `core_io`, `core_storage`,
+and per-format `archive_*` libraries so tools/tests link only what they need. Some domain
+modules still form legacy cycles (Phase 4 pending).
 
-- 根 CMake 使用 C++17。`cpp/core/CMakeLists.txt` 的 `krkr2core` 为 INTERFACE 聚合目标，不是单个已隔离实现库。
-- cocos2d 除窗口/绘制外，还被 UI、配置、文件后端、Android JNI 辅助及视频等路径使用；移除它不只是改启动函数。
-- `input/` 的 `core_input` 只依赖标准 C++，由输入适配器和 System 查询共同使用，包含状态、修饰位、局部坐标、取消分类与 UTF-8/UTF-16 提交文本编解码；OS 键码、坐标、IME 组合状态和事件排队仍由现有宿主承担。见[共享输入](subsystems/input-state.md)。
-- `visual/WindowLayer.h` 已拆出不暴露 Cocos 类型的窗口接口；具体 Cocos 窗口仍在 `environ/impl/TVPWindow.h`。视频通过 Cocos 专用访问入口借用节点，尚未替换呈现后端。见 [窗口接口拆分](subsystems/window-interface.md)。
-- CPU 图像操作统一经 `imageops/ImageOps.h` 调用，原生最近邻采样位于 `ImageOps.cpp`，其余后端位于 `ImageOps_opencv.cpp`；软件/OpenGL 渲染器通过不含 OpenCV 类型的 `ImageOps.h` 调用缩放、模糊、仿射、透视及矩阵求解。最近邻 resize 的像素采样已用原生 C++ 实现；其他算法及并行调度仍链接 OpenCV core/imgproc。
-- dev 已删除旧 `environ/sdl/tvpsdl.cpp`；游戏运行器当前没有 SDL 后端。
-  平台壳选型为 SDL3，另有默认关闭的[独立 SDL3/TJS 原型](../tools/sdl3-prototype/README.md)，
-  使用实验脚本接口，尚未接入生产 Window/Layer 或 KAG；见[平台壳选型](../.agents/notes/proposed/architecture/2026-11-03-ui-platform-shell.md)。
-- 内建插件实现源只属于各自静态库，`krkr2plugin` 通过 WHOLE_ARCHIVE 保留注册对象；PSD 可选。崩溃上报默认关闭，CocoStudio reader 已移除，管理 UI 仍使用 cocos UI。
-- 标准库/图像库/编解码依赖以 `vcpkg.json`、`vcpkg-configuration.json` 和各模块 CMake 为准；overlay ports 也包含自定义补丁。
+## 3. Boot flow (desktop)
 
-## 已有解耦与剩余边界
+1. `platforms/<os>/main.cpp` — creates spdlog sinks (`core`, `tjs2`, `plugin` loggers), stores
+   `argv[1]` as the pre-selected game path, runs `TVPAppDelegate` (cocos2d-x).
+2. `TVPAppDelegate::applicationDidFinishLaunching`
+   (`cpp/core/environ/cocos2d/AppDelegate.cpp:32`) — creates the GL view (960×640 design
+   resolution), initializes `LocaleConfigManager` (UI language), creates `TVPMainScene`, and
+   after one frame either opens the game from the startup arg or pushes
+   `TVPMainFileSelectorForm` (the game browser).
+3. Selecting a game file reaches `TVPMainScene` → `::Application->StartApplication(path)`
+   (`cpp/core/environ/cocos2d/MainScene.cpp:650`).
+4. `tTVPApplication::StartApplication` (`cpp/core/environ/Application.cpp:298`):
+   - `TVPInitScriptEngine()` — boots TJS2 and registers the global native classes
+     (`Window`, `Layer`, `System`, `Plugins`, `Storages`, `Timer`, …).
+   - `TVPInitEnvironFileBackends()` — desktop: `LocalFileBackend`; mobile: `MobileFileBackend`
+     (reads packed resources through cocos2d `FileUtils`).
+   - `TVPInitEngineArchiveCreators()` — registers XP3/ZIP/7z/TAR archive creators in the
+     `ArchiveRegistry` (tools register only XP3).
+   - `TVPInitializeBaseSystems()`, config load (`GlobalConfigManager`, per-game
+     `IndividualConfigManager`), async image loader.
+   - `tvpLoadPlugins()` — registers/loads built-in plugin modules (below).
+   - `TVPSystemInit()`, `TVPSystemControl` (watch timer), then
+     `TVPInitializeStartupScript()` — executes the game's `startup.tjs` (from its `data.xp3`
+     or loose `data/` folder), which drives everything else (usually `Initialize.ks`/KAG).
+5. From here the game runs as pure TJS/KAG on the emulated engine; KAG tags are parsed by the
+   built-in KAG parser (`cpp/core/base/KAGParser.cpp`).
 
-`tools/xp3/CMakeLists.txt` 当前链接 `core_log`、`core_storage_archive`、`archive_xp3` 及 argparse，
-通过 `tools/xp3/tool/CreateStream.cpp` 只读重开本地 XP3，不再链接完整 `core_storage`。
-根 CMake 的 `KRKR2_BUILD_APP=OFF`、`ENABLE_TESTS=OFF`、`BUILD_TOOLS=ON` 组合
-只配置日志、TJS2、消息、IO、XP3 和共享归档基础层；vcpkg 同步选择 tools feature。
-完整引擎和 full 测试仍配置全部域模块；strings 测试范围只添加日志、TJS2 和 Catch2。操作见 [构建与验证](guides/building.md)。
+Exceptions during startup are caught in `StartApplication`; TJS script errors surface as
+`eTJSScriptError` with block name + line, shown via `ShowException` and logged.
 
-归档格式目标统一链接 `core_storage_archive`，不再反向链接完整 `core_storage`。
-共享句柄缓存已从 XP3 迁到 `storage/impl/ArchiveHandleCache.*`；基础归档层不再链接 XP3。
-ZIP 读取器使用自身格式类型及 zlib，不再包含 cocos 的 minizip 头。完整应用的其他 cocos/archive 消费者仍保留。
-`archives` 测试范围可独立配置 ZIP/TAR；同时开启工具时增加 XP3 回归，见[构建指南](guides/building.md#独立归档测试)。
+## 4. Plugin system (the compatibility surface)
 
-`scripts/check_core_module_deps.py` 已恢复，检查 11 个 foundation 目标的显式 CMake 链接及直接平台包含。
-它不解析所有生成表达式或传递头，也不代表 domain 层既有环已消除。
+KiriKiri games extend the engine with Windows DLLs, loaded from TJS via
+`Plugins.link("Foo.dll")` (and auto-loaded `.tpm` manifests). This emulator replaces dynamic
+loading with **static registration**:
 
-`imageops` 测试范围仅配置 `core_imageops` 与 Catch2，不添加 TJS、日志或平台目标；其 vcpkg features 为 tests/imageops，见 [ImageOps](subsystems/imageops.md)。默认 full 测试也注册这组像素用例。依赖守卫额外拒绝渲染器/插件中的直接 OpenCV 调用；完整渲染路径与游戏画面仍需单独回归。
+- Each built-in plugin translation unit declares its module name up front:
+  ```cpp
+  #include "ncbind.hpp"
+  #define NCB_MODULE_NAME TJS_W("KAGParserEx.dll")   // must match what the game links
+  NCB_PRE_REGIST_CALLBACK(InitPlugin_KAGParserEx);   // and/or NCB_REGISTER_CLASS(...)
+  ```
+- `ncbAutoRegister` (see `cpp/core/plugin/ncbind.hpp:2096`, `ncbind.cpp`) collects these into
+  `_internal_plugins`, a map keyed by **lower-cased DLL name**.
+- `Plugins.link("foo.dll")` → `TVPLoadPlugin` → `TVPLoadInternalPlugin`
+  (`cpp/core/plugin/PluginImpl.cpp:48`) → `ncbAutoRegister::LoadModule`, which runs the module's
+  Pre/Class/Post registration callbacks, registering native classes/functions into the TJS global.
+  `.tpm` names are rewritten to `.dll` before lookup. Already-registered names are no-ops.
+- A miss logs `Loading Plugin: <name> Failed` (spdlog, level error) and the TJS call raises —
+  most "game doesn't start" reports end here. The fix is a new/extended built-in plugin under
+  `cpp/plugins/` (workflow: `.claude/skills/add-plugin/SKILL.md`).
 
-Desktop 管理界面可通过 `KRKR2_USE_COCOS_UI=OFF` 裁剪，
-运行时默认配置初始化独立于设置页面；游戏窗口、菜单及脚本对话框仍使用 Cocos。
-实现边界见 [U1 管理界面开关](subsystems/management-ui.md)。
+DLL → implementation mapping: [KRKR_PLUGINS.md](KRKR_PLUGINS.md) lists known plugin DLLs and
+their upstream sources; the built-in set currently covers (grep `NCB_MODULE_NAME`):
+`KAGParserEx`, `psbfile`, `psd`, `motionplayer`, `emoteplayer`, `fstat`, `json`, `dirlist`,
+`csvParser`, `addFont`, `saveStruct`, `varfile`, `getSample`, `getabout`, `TextRender`,
+`win32dialog`, `windowEx`, `ScriptsEx`, `wutcwf`, `layerExDraw`, `layerExMovie`, `perspective`,
+`fftgraph`, `xp3filter`, `DrawDeviceForSteam`, `krkrsteam`, `steam_api`.
+
+Also notable: `cpp/plugins/steam/` (Steam integration) and `layerex_draw` (with a blend2d
+backend). Plugin subprojects have their own docs (`cpp/plugins/motionplayer/docs/`,
+`cpp/plugins/psbfile/docs/`).
+
+## 5. Platform & UI layer
+
+- Rendering/windowing: **cocos2d-x** (vcpkg `cocos2dx`), OpenGL. `environ/cocos2d/MainScene.cpp`
+  hosts `TVPWindowLayer`s (the emulated TVP windows), the in-game console overlay, and all UI
+  forms; `CCKeyCodeConv` maps keys to TVP virtual keys.
+- Per-OS code: `environ/{apple/macos,linux,win32,android}` implement `Platform.h`
+  (paths, message boxes, IME, memory info, app exit). `environ/sdl/tvpsdl.cpp` holds SDL-derived
+  helpers used on desktop.
+- UI resources: Cocos Studio `.csb` forms in `ui/cocos-studio/ui/`, strings in
+  `ui/cocos-studio/locale/{en_us,zh_cn}.xml`, loaded via `LocaleConfigManager`.
+- Android additionally wraps the core in `libkrkr2.so` + JNI (`platforms/android/`), with
+  breakpad crash reporting and an APK build via Gradle.
+
+## 6. Configuration, savedata, logs
+
+- Emulator preferences: `TVPGetInternalPreferencePath()` =
+  `<cocos2d writable path>/.preference/` (per-OS writable dir) — `GlobalPreference.xml`
+  (`GlobalConfigManager`), per-game settings (`IndividualConfigManager`), `recentpath.xml`
+  (recent games list).
+- Game savedata: written through the VFS into the game's own save directory conventions,
+  redirected by the storage layer.
+- Logs: spdlog to stdout with three named loggers — `core`, `tjs2` (also receives
+  `TVPConsoleLog`, mirrored to the in-game console overlay), `plugin`. Default level `info`
+  (set in each platform `main.cpp`; lower it for `debug` spew). An in-emulator debug console
+  (`ui/ConsoleWindow.cpp`) shows the same lines.
+
+## 7. Build & CI
+
+- CMake ≥ 3.28 + Ninja + vcpkg (`VCPKG_ROOT`), presets in `CMakePresets.json`:
+  `{MacOS,Linux,Windows} {Debug,Release} {Config,Build}`; binaries in `out/<os>/<config>/bin/krkr2/`.
+- Android via `platforms/android/gradlew assembleDebug` (custom toolchain
+  `cmake/vcpkg_android.cmake`, triplets in `vcpkg/triplets`).
+- CI (`.github/workflows/ci.yml`): clang-format-20 check (`cpp/`, `platforms/`) → Linux/Windows
+  release builds → Android APK. Tests: Catch2 via ctest (`ENABLE_TESTS`, off for Android/iOS).
+- `scripts/check_core_module_deps.py` — parses `cpp/core/*/CMakeLists.txt` link lists and fails
+  on new dependency cycles among core targets (run locally; intended for CI per
+  CORE_MODULE_DECOUPLING Phase 3).
+
+## 8. Testing
+
+- `tests/unit-tests/core/tjs2` — TJS language/`ttstr` tests.
+- `tests/unit-tests/core/movie` — FFmpeg/AE audio tests.
+- `tests/unit-tests/core/visual`, `tests/unit-tests/plugins` (e.g. `psbfile-dll`).
+- Fixtures under `tests/test_files` (incl. e-mote sample data used by the motionplayer docs).
+
+## 9. Design docs
+
+- [CORE_MODULE_DECOUPLING.md](CORE_MODULE_DECOUPLING.md) — core module layering, cycle
+  breaking, the xp3-tool minimal-linking refactor, phase status.
+- [GAME_COMPATIBILITY.md](GAME_COMPATIBILITY.md) — diagnosing non-running games.
+- [KRKR_PLUGINS.md](KRKR_PLUGINS.md) — plugin DLL source registry.
+- [rust/](rust/README.md) — planned incremental Rust layer (`rust/` crates + `bridge/` C ABI),
+  psbfile as the pilot module.

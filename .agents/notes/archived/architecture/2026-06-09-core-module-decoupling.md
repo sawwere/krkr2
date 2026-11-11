@@ -1,5 +1,6 @@
-# Core 模块解耦与 xp3 工具重构分析
+# Core Module Decoupling and xp3 Tool Refactor Analysis
 
+<<<<<<<< Updated upstream:.agents/notes/archived/architecture/2026-06-09-core-module-decoupling.md
 Status: archived
 
 历史分析：保留原始诊断和当时计划，部分路径与结论已经过时；不据此恢复旧实现或执行旧工具链修改。
@@ -9,14 +10,20 @@ Status: archived
 > **文档版本：** 2026-06-09\
 > **相关路径：** `cpp/core/`、`tools/xp3/`\
 > **背景：** xp3 解包工具只需虚拟文件系统能力，但当前链接 `core_base_module` 会间接拉入整个引擎栈
+========
+> **Document version:** 2026-06-09
+> **Related paths:** `cpp/core/`, `tools/xp3/`
+> **Background:** the xp3 extraction tool only needs the virtual file system, but linking
+> `core_base_module` currently drags in the entire engine stack.
+>>>>>>>> Stashed changes:docs/CORE_MODULE_DECOUPLING.md
 
 ---
 
-## 1. 现状概览
+## 1. Current State
 
-### 1.1 xp3 工具实际需求
+### 1.1 What the xp3 tool actually needs
 
-`tools/xp3/main.cpp` 实际使用的 API 极少：
+`tools/xp3/main.cpp` uses very few APIs:
 
 ```cpp
 void extractArchive(const std::string &file, const std::string &destDir) {
@@ -25,32 +32,33 @@ void extractArchive(const std::string &file, const std::string &destDir) {
     for(tjs_int i = 0; i < count; i++) {
         ttstr name = arc->GetName(i);
         const std::unique_ptr<tTJSBinaryStream> src{ arc->CreateStreamByIndex(i) };
-        // ... 写入本地文件
+        // ... write to a local file
     }
 }
 ```
 
-实际依赖链：
+Actual dependency chain:
 
-| 层级 | 组件 | 用途 |
-|------|------|------|
-| 字符串/类型 | `tjs2`（`ttstr`、基础类型） | 路径与字符串 |
-| 存储抽象 | `StorageIntf`（`tTVPArchive`、`TVPOpenArchive`） | 打开归档 |
-| XP3 实现 | `XP3Archive.cpp` | 解析/解压 XP3 |
-| 流 I/O | `tTJSBinaryStream`、`TVPCreateStream` | 读文件 |
-| 压缩 | zlib | XP3 段解压 |
+| Layer | Component | Purpose |
+|-------|-----------|---------|
+| Strings/types | `tjs2` (`ttstr`, base types) | Paths and strings |
+| Storage abstraction | `StorageIntf` (`tTVPArchive`, `TVPOpenArchive`) | Opening archives |
+| XP3 implementation | `XP3Archive.cpp` | Parsing/decompressing XP3 |
+| Stream I/O | `tTJSBinaryStream`, `TVPCreateStream` | Reading files |
+| Compression | zlib | XP3 segment decompression |
 
-本质上只需要 **虚拟文件系统（VFS）+ XP3 归档读取器**。
+Essentially it only needs a **virtual file system (VFS) + an XP3 archive reader**.
 
-### 1.2 当前链接关系
+### 1.2 Current link relationships
 
-`tools/xp3/CMakeLists.txt`：
+`tools/xp3/CMakeLists.txt`:
 
 ```cmake
 target_link_libraries(${PROJECT_NAME} PUBLIC tjs2 PRIVATE core_base_module)
 ```
 
-`core_base_module` 的 CMake 却链了几乎所有 core 模块和重型第三方库：
+Yet `core_base_module`'s CMake links almost every core module plus heavyweight third-party
+libraries:
 
 ```cmake
 target_link_libraries(${PROJECT_NAME} PUBLIC tjs2 PRIVATE
@@ -63,15 +71,16 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     cocos2dx::cocos2d)
 ```
 
-**xp3 工具编译时会间接拉入：Cocos2d-x、OpenCV、FFmpeg、OpenAL、FreeType、WebP、UI 表单、插件系统等，与解包完全无关。**
+**Building the xp3 tool indirectly pulls in: Cocos2d-x, OpenCV, FFmpeg, OpenAL, FreeType, WebP,
+UI forms, the plugin system, etc. — none of which have anything to do with unpacking.**
 
 ---
 
-## 2. 核心问题诊断
+## 2. Core Problem Diagnosis
 
-### 2.1 模块间循环依赖（最严重）
+### 2.1 Circular dependencies between modules (most severe)
 
-当前 CMake 依赖形成环，而不是分层 DAG：
+The current CMake dependency graph contains cycles instead of a layered DAG:
 
 ```mermaid
 flowchart LR
@@ -123,34 +132,34 @@ flowchart LR
     movie --> utils
 ```
 
-后果：
+Consequences:
 
-- 无法单独编译/测试任意一层
-- 工具被迫链接整个引擎
-- 修改 base 可能触发全量重编
-- 链接器要解析大量符号，构建慢、二进制大
+- No single layer can be compiled or tested in isolation
+- Tools are forced to link the entire engine
+- Touching base can trigger a full rebuild
+- The linker must resolve huge numbers of symbols — slow builds, large binaries
 
-### 2.2 `core_base_module` 职责过重（God Module）
+### 2.2 `core_base_module` has too many responsibilities (God Module)
 
-`base` 同时包含：
+`base` simultaneously contains:
 
-| 类别 | 源文件示例 | xp3 是否需要 |
-|------|-----------|-------------|
-| 归档格式 | XP3 / ZIP / 7z / TAR | 仅 XP3 |
-| 存储系统 | StorageIntf / Impl | 需要（但应精简） |
-| 脚本管理 | ScriptMgnIntf / Impl | 否 |
-| 事件系统 | EventIntf / Impl | 否 |
-| 系统初始化 | SysInitIntf / Impl | 否 |
-| KAG 解析 | KAGParser | 否 |
-| 消息系统 | MsgIntf / Impl | 否 |
+| Category | Example sources | Needed by xp3? |
+|----------|-----------------|----------------|
+| Archive formats | XP3 / ZIP / 7z / TAR | XP3 only |
+| Storage system | StorageIntf / Impl | Yes (but should be slimmed) |
+| Script management | ScriptMgnIntf / Impl | No |
+| Event system | EventIntf / Impl | No |
+| System init | SysInitIntf / Impl | No |
+| KAG parsing | KAGParser | No |
+| Message system | MsgIntf / Impl | No |
 
-`base` 本应是底层基础，却混入了上层业务逻辑。
+`base` should be the low-level foundation, yet it has absorbed upper-layer business logic.
 
-### 2.3 源码级反向依赖（头文件/实现穿透）
+### 2.3 Source-level reverse dependencies (header/implementation leakage)
 
-底层实现直接 `#include` 上层模块，例如：
+Low-level implementations directly `#include` upper-layer modules, e.g.:
 
-**StorageImpl.cpp**（存储层 → 游戏引擎/UI）：
+**StorageImpl.cpp** (storage layer → game engine/UI):
 
 ```cpp
 #include <cocos/cocos2d.h>
@@ -158,7 +167,7 @@ flowchart LR
 #include "Application.h"
 ```
 
-**ScriptMgnIntf.cpp**（脚本管理 → 窗口/图层/音频/插件）：
+**ScriptMgnIntf.cpp** (script management → window/layer/audio/plugins):
 
 ```cpp
 #include "WindowIntf.h"
@@ -169,41 +178,42 @@ flowchart LR
 #include "PluginIntf.h"
 ```
 
-**SysInitImpl.cpp**（初始化 → 图形/图层）：
+**SysInitImpl.cpp** (initialization → graphics/layers):
 
 ```cpp
 #include "GraphicsLoaderIntf.h"
 #include "LayerIntf.h"
 ```
 
-这是 **架构倒置**：foundation 依赖 presentation/runtime，而不是反过来。
+This is **inverted architecture**: foundation depending on presentation/runtime instead of the
+other way around.
 
-### 2.4 平台与引擎耦合在 base 层
+### 2.4 Platform and engine coupled at the base layer
 
-- `StorageImpl` 使用 Cocos2d `FileUtils` 做文件访问
-- `environ` 含 Cocos AppDelegate、SDL、UI 表单
-- 工具/单元测试无法脱离 Cocos 运行
+- `StorageImpl` uses Cocos2d `FileUtils` for file access
+- `environ` contains the Cocos AppDelegate, SDL, UI forms
+- Tools and unit tests cannot run without Cocos
 
-### 2.5 xp3 工具的具体痛点
+### 2.5 Concrete pain points of the xp3 tool
 
-| 问题 | 影响 |
-|------|------|
-| 链接 `core_base_module` | 拉入 8 个 core 模块 |
-| 间接依赖 cocos2dx | 工具需 vcpkg 装完整游戏引擎 |
-| 间接依赖 FFmpeg / OpenCV 等 | 编译慢、依赖多 |
-| 无法 headless 最小化部署 | 工具体积大 |
-| 无法独立测试 XP3 解析 | 必须启动整个引擎栈 |
+| Problem | Impact |
+|---------|--------|
+| Links `core_base_module` | Pulls in 8 core modules |
+| Indirect dependency on cocos2dx | Tool requires the full game engine from vcpkg |
+| Indirect deps on FFmpeg / OpenCV etc. | Slow compiles, many dependencies |
+| No headless minimal deployment | Huge tool binary |
+| Cannot test XP3 parsing in isolation | Must boot the whole engine stack |
 
 ---
 
-## 3. 目标架构：分层解耦
+## 3. Target Architecture: Layered Decoupling
 
-### 3.1 推荐分层（自底向上）
+### 3.1 Recommended layers (bottom-up)
 
 ```mermaid
 flowchart TB
     subgraph L0 ["L0: Foundation"]
-        tjs2["tjs2<br/>字符串/Variant/基础类型"]
+        tjs2["tjs2<br/>strings/Variant/base types"]
         utils_min["core_utils_min<br/>Thread/Debug/TickCount/md5"]
     end
 
@@ -257,114 +267,117 @@ flowchart TB
     archive_xp3 --> xp3tool
 ```
 
-**原则：**
+**Principles:**
 
-1. **只允许向下依赖**，禁止环
-2. **接口与实现分离**（`StorageIntf.h` 不 include 上层头）
-3. **可选组件**（ZIP/7z/TAR 用 CMake option 控制）
-4. **平台抽象**（`IFileBackend`，默认 `StdFileBackend` 用 `std::filesystem`）
+1. **Dependencies may only point downward**; cycles are forbidden
+2. **Separate interfaces from implementations** (`StorageIntf.h` must not include upper headers)
+3. **Optional components** (ZIP/7z/TAR controlled by CMake options)
+4. **Platform abstraction** (`IFileBackend`; default `StdFileBackend` uses `std::filesystem`)
 
-### 3.2 xp3 工具的理想依赖
+### 3.2 The xp3 tool's ideal dependencies
 
 ```cmake
-# 目标状态
+# Target state
 target_link_libraries(xp3 PRIVATE
     tjs2
     core_io          # BinaryStream
-    archive_xp3      # 仅 XP3
-    core_storage_tool # TVPOpenArchive + 本地文件 backend
+    archive_xp3      # XP3 only
+    core_storage_tool # TVPOpenArchive + local-file backend
 )
-# 不链接: visual, sound, movie, environ, cocos2dx
+# Does not link: visual, sound, movie, environ, cocos2dx
 ```
 
-预计效果：
+Expected outcome:
 
-- 编译依赖从 ~30 个 vcpkg 包 → **tjs2 + zlib + fmt/spdlog**
-- 链接时间显著缩短
-- 可单独为 XP3 写单元测试
+- Compile dependencies drop from ~30 vcpkg packages to **tjs2 + zlib + fmt/spdlog**
+- Significantly shorter link times
+- XP3 can get dedicated unit tests
 
 ---
 
-## 4. 重构方案（分阶段）
+## 4. Refactor Plan (Phased)
 
-### Phase 0：度量与约束（1–2 天）
+### Phase 0: Measurement and constraints (1–2 days)
 
-1. 用脚本生成模块依赖图，CI 禁止新增环
-2. 列出各模块 `#include` 跨层引用
-3. 为 xp3 建最小链接 baseline（当前 vs 目标）
+1. Generate the module dependency graph with a script; CI forbids new cycles
+2. List cross-layer `#include`s per module
+3. Establish a minimal-link baseline for xp3 (current vs target)
 
-### Phase 1：抽出 `core_io` + `archive_xp3`（1 周，最高 ROI）
+### Phase 1: Extract `core_io` + `archive_xp3` (1 week, highest ROI)
 
-**新建模块：**
+**New modules:**
 
 ```
 cpp/core/io/
 ├── BinaryStream.cpp/h
-├── IFileBackend.h          # 抽象文件接口
-├── StdFileBackend.cpp      # std::filesystem 实现
-├── UtilStreams.cpp         # 精简版，去掉 Platform 依赖
+├── IFileBackend.h          # abstract file interface
+├── StdFileBackend.cpp      # std::filesystem implementation
+├── UtilStreams.cpp         # slimmed, Platform dependency removed
 └── CMakeLists.txt
 
 cpp/core/archive/
 ├── xp3/
-│   ├── XP3Archive.cpp/h    # 从 base 移出
+│   ├── XP3Archive.cpp/h    # moved out of base
 │   └── CMakeLists.txt
 ```
 
-**改动要点：**
+**Key changes:**
 
-- `XP3Archive.cpp` 中 `TVPCreateStream` → 注入 `IFileBackend`
-- 去掉 `MsgIntf.h`、`EventIntf.h`、`SysInitIntf.h` 等非必要 include
-- XP3 extraction filter 保留回调接口（已有 `tTVPXP3ArchiveExtractionFilter`）
+- In `XP3Archive.cpp`, `TVPCreateStream` → inject `IFileBackend`
+- Remove unneeded includes like `MsgIntf.h`, `EventIntf.h`, `SysInitIntf.h`
+- Keep the XP3 extraction filter's callback interface (existing
+  `tTVPXP3ArchiveExtractionFilter`)
 
-**xp3 工具 CMake 改为：**
+**xp3 tool CMake becomes:**
 
 ```cmake
 target_link_libraries(xp3 PRIVATE tjs2 core_io archive_xp3)
 ```
 
-### Phase 2：精简 `core_storage`（1–2 周）
+### Phase 2: Slim down `core_storage` (1–2 weeks)
 
-1. 从 `StorageImpl.cpp` **移除** `#include <cocos/cocos2d.h>` 和 `WindowImpl.h`
-2. 文件访问统一走 `IFileBackend`：
-   - 运行时：`CocosFileBackend`（在 environ 注册）
-   - 工具/测试：`StdFileBackend`
-3. `TVPOpenArchive` 保留，但 archive creator 表改为 **注册机制**，不再硬编码全部格式：
+1. **Remove** `#include <cocos/cocos2d.h>` and `WindowImpl.h` from `StorageImpl.cpp`
+2. Route all file access through `IFileBackend`:
+   - Runtime: `CocosFileBackend` (registered in environ)
+   - Tools/tests: `StdFileBackend`
+3. Keep `TVPOpenArchive`, but turn the archive-creator table into a **registration mechanism**
+   instead of hardcoding every format:
 
 ```cpp
-// 注册式，工具只注册 XP3
+// Registry-based; tools register only XP3
 TVPRegisterArchiveCreator(tTVPXP3Archive::Create);
 ```
 
-4. ZIP/7z/TAR 拆成独立 `archive_*` 库，按需链接
+4. Split ZIP/7z/TAR into standalone `archive_*` libraries, linked on demand
 
-### Phase 3：拆分 `core_base_module`（2–3 周）
+### Phase 3: Split `core_base_module` (2–3 weeks)
 
-| 新模块 | 自 base 迁出 | 依赖 |
-|--------|-------------|------|
+| New module | Migrated out of base | Depends on |
+|------------|----------------------|------------|
 | `core_event` | EventIntf/Impl | io, utils |
 | `core_msg` | MsgIntf/Impl | event |
 | `core_sysinit` | SysInitIntf/Impl | storage, msg |
 | `core_script` | ScriptMgnIntf/Impl | sysinit, tjs2 |
 | `core_kag` | KAGParser | script |
 
-**删除 base 对其他 domain 模块的 CMake 链接**，改为 domain 依赖 runtime core。
+**Delete base's CMake links to other domain modules**; domain modules depend on the runtime
+core instead.
 
-### Phase 4：打破 domain 环（2–3 周）
+### Phase 4: Break the domain cycles (2–3 weeks)
 
-当前环的典型解法：
+Typical resolutions for the current cycles:
 
-| 环 | 解法 |
-|----|------|
-| base ↔ visual | base 只保留接口；visual 实现并注册 |
-| environ ↔ visual/sound | environ 做 **composition root**，在启动时注入依赖 |
-| utils ↔ environ | utils 去掉 environ 依赖；平台相关放到 environ |
-| sound ↔ movie | movie 依赖 sound（单向），sound 不依赖 movie |
+| Cycle | Solution |
+|-------|----------|
+| base ↔ visual | base keeps interfaces only; visual implements and registers them |
+| environ ↔ visual/sound | environ becomes the **composition root**, injecting dependencies at startup |
+| utils ↔ environ | utils drops its environ dependency; platform-specific bits move to environ |
+| sound ↔ movie | movie depends on sound (one direction); sound never depends on movie |
 
-**依赖注入示例：**
+**Dependency-injection example:**
 
 ```cpp
-// environ/Application.cpp - 唯一组装点
+// environ/Application.cpp - the single assembly point
 void TVPInitializeModules() {
     TVPSetFileBackend(std::make_unique<CocosFileBackend>());
     TVPRegisterArchiveCreators({ XP3, ZIP, ... });
@@ -372,9 +385,9 @@ void TVPInitializeModules() {
 }
 ```
 
-### Phase 5：统一 `krkr2core` 接口库（可选）
+### Phase 5: Unify the `krkr2core` interface library (optional)
 
-保留现有 `krkr2core` INTERFACE 目标给主程序用，内部改为：
+Keep the existing `krkr2core` INTERFACE target for the main program, internally restructured as:
 
 ```cmake
 target_link_libraries(krkr2core INTERFACE
@@ -383,43 +396,44 @@ target_link_libraries(krkr2core INTERFACE
 )
 ```
 
-工具只链接所需子集。
+Tools link only the subset they need.
 
 ---
 
-## 5. xp3「只要 VFS」的三种实现路径
+## 5. Three implementation paths for "VFS-only" xp3
 
-### 方案 A：最小链接（推荐，改动适中）
+### Option A: Minimal linking (recommended, moderate changes)
 
-- 沿用现有 `TVPOpenArchive` API
-- 新建 `core_io` + `archive_xp3` + `core_storage_tool`
-- xp3 工具几乎不用改代码，只改 CMake
-- **优点**：与引擎行为一致，filter 兼容
-- **缺点**：仍依赖 tjs2 部分基础设施
+- Keep the existing `TVPOpenArchive` API
+- Create `core_io` + `archive_xp3` + `core_storage_tool`
+- The xp3 tool changes almost no code, only CMake
+- **Pros:** identical behavior to the engine, filter-compatible
+- **Cons:** still depends on some tjs2 infrastructure
 
-### 方案 B：独立 XP3 库（零引擎依赖）
+### Option B: Standalone XP3 library (zero engine dependencies)
 
-- 新建 `libxp3`，只依赖 C++17 + zlib
-- 自实现 XP3 index/segment 解析（从 `XP3Archive.cpp` 提取纯逻辑）
-- xp3 工具直接用 `libxp3::extract(path, dest)`
-- **优点**：完全独立，可发布为通用工具
-- **缺点**：与引擎 filter/加密逻辑需同步维护
+- New `libxp3`, depending only on C++17 + zlib
+- Self-contained XP3 index/segment parsing (pure logic extracted from `XP3Archive.cpp`)
+- The xp3 tool calls `libxp3::extract(path, dest)` directly
+- **Pros:** fully independent, publishable as a general-purpose tool
+- **Cons:** filter/encryption logic must be kept in sync with the engine
 
-### 方案 C：短期 workaround
+### Option C: Short-term workaround
 
-- xp3 工具 CMake 暂时不链 `core_base_module`
-- 只编译 `XP3Archive.cpp` + 精简 `StorageIntf.cpp` + `BinaryStream.cpp`
-- 用 `OBJECT` 库或源码列表直接编入 xp3
-- **优点**：最快见效
-- **缺点**：技术债，难维护
+- xp3 tool CMake temporarily stops linking `core_base_module`
+- Compile only `XP3Archive.cpp` + slimmed `StorageIntf.cpp` + `BinaryStream.cpp`
+- Use an `OBJECT` library or source lists compiled straight into xp3
+- **Pros:** fastest results
+- **Cons:** technical debt, hard to maintain
 
-**建议：Phase 1 用方案 A，长期可演进为方案 B 供外部使用。**
+**Recommendation: Option A for Phase 1; in the long run evolve toward Option B for external
+use.**
 
 ---
 
-## 6. 关键接口设计草案
+## 6. Key Interface Design Drafts
 
-### 6.1 文件后端抽象
+### 6.1 File backend abstraction
 
 ```cpp
 // core/io/IFileBackend.h
@@ -427,14 +441,14 @@ struct IFileBackend {
     virtual ~IFileBackend() = default;
     virtual std::unique_ptr<tTJSBinaryStream> OpenRead(const ttstr& path) = 0;
     virtual bool Exists(const ttstr& path) = 0;
-    virtual ttstr GetLocalPath(const ttstr& path) = 0; // 空 = 非本地
+    virtual ttstr GetLocalPath(const ttstr& path) = 0; // empty = not local
 };
 
-// 全局或 context 注入，替代 TVPCreateStream 内部硬编码
+// Injected globally or via context, replacing hardcoding inside TVPCreateStream
 void TVPSetFileBackend(std::unique_ptr<IFileBackend> backend);
 ```
 
-### 6.2 归档注册
+### 6.2 Archive registration
 
 ```cpp
 using ArchiveCreatorFn = tTVPArchive*(*)(const ttstr&, tTJSBinaryStream*, bool);
@@ -442,159 +456,167 @@ void TVPRegisterArchiveCreator(ArchiveCreatorFn fn);
 tTVPArchive* TVPOpenArchive(const ttstr& name, bool normalize);
 ```
 
-工具启动时：
+Tool startup:
 
 ```cpp
 TVPSetFileBackend(std::make_unique<StdFileBackend>());
 TVPRegisterArchiveCreator(tTVPXP3Archive::Create);
 ```
 
-### 6.3 模块依赖规则（CI 强制）
+### 6.3 Module dependency rules (CI-enforced)
 
 ```
-允许: L(n) → L(n-1), L(n-2), ...
-禁止: L(n) → L(n+1)
-禁止: 同层互依赖（除非通过接口 + 注册）
+Allowed:  L(n) → L(n-1), L(n-2), ...
+Forbidden: L(n) → L(n+1)
+Forbidden: same-layer mutual dependencies (unless via interface + registration)
 ```
 
 ---
 
-## 7. 风险与注意事项
+## 7. Risks and Caveats
 
-| 风险 | 缓解 |
-|------|------|
-| StorageImpl 体量大（~1400 行），拆分易引入回归 | 先加 XP3 单元测试，再重构 |
-| XP3 加密/filter 与插件 `xp3filter` 耦合 | filter 保持回调；插件在运行时注册 |
-| Cocos FileUtils 行为与 std::filesystem 差异 | 抽象层 + 对比测试 |
-| 全量重构周期长 | 分阶段，每阶段 xp3 工具可独立验证 |
-| 现有插件依赖 `krkr2core` 单体 | 保留 INTERFACE 聚合目标，内部逐步拆分 |
-
----
-
-## 8. 优先级建议
-
-| 优先级 | 任务 | 预期收益 |
-|--------|------|----------|
-| P0 | 新建 `core_io` + `archive_xp3`，xp3 改 CMake | 工具可轻量编译 |
-| P0 | StorageImpl 去掉 cocos/Window 直接 include | 打破最严重反向依赖 |
-| P1 | 拆分 base → event/msg/sysinit/script | 模块边界清晰 |
-| P1 | CMake 去环 + CI 依赖检查 | 防止退化 |
-| P2 | ZIP/7z/TAR 可选 archive 组件 | 按需链接 |
-| P2 | 独立 `libxp3` 供外部使用 | 工具产品化 |
-| P3 | environ 作为唯一 composition root | 架构最终态 |
+| Risk | Mitigation |
+|------|------------|
+| `StorageImpl` is large (~1400 lines); splitting risks regressions | Add XP3 unit tests first, then refactor |
+| XP3 encryption/filters coupled to the `xp3filter` plugin | Keep filters as callbacks; the plugin registers at runtime |
+| Behavioral differences between Cocos FileUtils and std::filesystem | Abstraction layer + comparative tests |
+| Full refactor takes a long time | Phase it; each phase independently verifiable via the xp3 tool |
+| Existing plugins depend on the `krkr2core` monolith | Keep the INTERFACE aggregate target; split it internally step by step |
 
 ---
 
-## 9. 总结
+## 8. Priority Recommendations
 
-**根本问题**：`core_base_module` 既是「基础层」又是「聚合层」，CMake 和源码双向依赖所有 domain 模块，导致 xp3 这类只需 VFS 的工具被迫链接整个 KrKr2 引擎（Cocos、FFmpeg、OpenCV、UI 等）。
-
-**解耦核心**：
-
-1. **纵向分层**：Foundation → I/O/Storage → Runtime → Domain → Application
-2. **横向拆分**：base 按职责拆成 io、storage、event、msg、sysinit 等
-3. **依赖注入**：文件后端、归档 creator、平台服务在 environ 组装
-4. **xp3 短期**：只链 `tjs2 + core_io + archive_xp3`
-5. **长期**：可选独立 `libxp3`，与引擎并行维护
+| Priority | Task | Expected benefit |
+|----------|------|------------------|
+| P0 | Create `core_io` + `archive_xp3`; switch xp3's CMake | Tool compiles lightweight |
+| P0 | Remove direct cocos/Window includes from StorageImpl | Breaks the worst reverse dependency |
+| P1 | Split base → event/msg/sysinit/script | Clear module boundaries |
+| P1 | De-cycle CMake + CI dependency check | Prevents regression |
+| P2 | Optional ZIP/7z/TAR archive components | Link on demand |
+| P2 | Standalone `libxp3` for external use | Tool becomes a product |
+| P3 | environ as the sole composition root | Final architecture state |
 
 ---
 
-## 10. 阶段进度总览（2026-06-09）
+## 9. Summary
 
-| 阶段 | 状态 | 内容 |
-|------|------|------|
-| Phase 1 | ✅ 完成 | `core_io`、`archive_xp3`、`core_storage_tool`、xp3 轻量链接 |
-| Phase 2 | ✅ 基本完成 | IFileBackend、归档拆分、`core_storage`、工具链 `core_storage_tool` |
-| Phase 3 | 🔄 进行中 | `TArchiveStream` 下沉、CI 依赖检查、拆 `base` 子模块 |
-| Phase 4 | ⏳ 待做 | CMake 去环、environ 组合根 |
-| Phase 5 | ⏳ 可选 | `krkr2core` 接口库细化 |
+**Root problem:** `core_base_module` is both the "foundation layer" and the "aggregate layer";
+its CMake and sources depend bidirectionally on all domain modules, forcing VFS-only tools like
+xp3 to link the whole KrKr2 engine (Cocos, FFmpeg, OpenCV, UI, …).
 
-### Phase 2 已完成
+**Decoupling essentials:**
 
-- `StorageImpl` 去掉 `cocos/cocos2d.h`
+1. **Vertical layering:** Foundation → I/O/Storage → Runtime → Domain → Application
+2. **Horizontal splitting:** base splits by responsibility into io, storage, event, msg, sysinit, …
+3. **Dependency injection:** file backends, archive creators, platform services assembled in environ
+4. **xp3 short term:** link only `tjs2 + core_io + archive_xp3`
+5. **Long term:** optional standalone `libxp3`, maintained in parallel with the engine
+
+---
+
+## 10. Phase Progress Overview (2026-06-09)
+
+| Phase | Status | Contents |
+|-------|--------|----------|
+| Phase 1 | ✅ done | `core_io`, `archive_xp3`, `core_storage_tool`, xp3 lightweight linking |
+| Phase 2 | ✅ mostly done | IFileBackend, archive splitting, `core_storage`, tool chain `core_storage_tool` |
+| Phase 3 | 🔄 in progress | `TArchiveStream` sunk down, CI dependency check, splitting `base` submodules |
+| Phase 4 | ⏳ pending | De-cycle CMake, environ composition root |
+| Phase 5 | ⏳ optional | `krkr2core` interface library refinement |
+
+### Phase 2 — completed
+
+- `StorageImpl` no longer includes `cocos/cocos2d.h`
 - `IFileBackend` + `LocalFileBackend` / `MobileFileBackend` / `StdFileBackend`
-- `EnvironFileBackendInit`；移动端 Cocos 条件编译
-- 移除 `ChainedFileBackend`
-- `StorageImpl` 去掉无用 `WindowImpl.h`
-- `ArchiveRegistry`：归档 creator 注册表（引擎 ZIP/7z/TAR/XP3；工具仅 XP3）
-- **`core_storage` 库** — `StorageIntf`、`UtilStreams`、`ArchiveRegistry`、`TVPInitToolStorage()`；`base` 链 `core_storage`，引擎归档由 `TVPInitEngineArchiveCreators()` 注册
-- **`archive_zip` / `archive_7z` / `archive_tar`** — 从 `base` 迁出；`storeFilename` 提取至 `core_storage/impl/ArchiveFilename.cpp`
-- **`core_storage_tool`** — 原 `storage_min` 迁至 `cpp/core/storage/tool/`，xp3 改链
+- `EnvironFileBackendInit`; conditional Cocos compilation on mobile
+- Removed `ChainedFileBackend`
+- Removed the unused `WindowImpl.h` from `StorageImpl`
+- `ArchiveRegistry`: registry of archive creators (engine: ZIP/7z/TAR/XP3; tools: XP3 only)
+- **`core_storage` library** — `StorageIntf`, `UtilStreams`, `ArchiveRegistry`,
+  `TVPInitToolStorage()`; `base` links `core_storage`; engine archives registered via
+  `TVPInitEngineArchiveCreators()`
+- **`archive_zip` / `archive_7z` / `archive_tar`** — moved out of `base`; `storeFilename`
+  extracted into `core_storage/impl/ArchiveFilename.cpp`
+- **`core_storage_tool`** — former `storage_min` moved to `cpp/core/storage/tool/`; xp3
+  relinked to it
 
-### Phase 2 遗留
+### Phase 2 — leftovers
 
-1. **xp3 链完整 `core_storage`** — 需将 `TVPCreateStream` 从 `StorageIntf.cpp` 拆出（引擎版 vs 工具版）
+1. **xp3 links the full `core_storage`** — `TVPCreateStream` still needs to be split out of
+   `StorageIntf.cpp` (engine version vs tool version)
 
-### Phase 3 已完成（起步）
+### Phase 3 — completed (initial steps)
 
-| 改动 | 说明 |
-|------|------|
-| `core_storage/impl/ArchiveStream.cpp` | `TArchiveStream` 从 `StorageImpl.cpp` 迁出 |
-| `scripts/check_core_module_deps.py` | 解析 CMake 链接关系，检测新增依赖环 |
-| **`core_msg`** | `MsgIntf.cpp` / `MsgImpl.cpp` 编入独立库；去掉 `ApplicationSpecialPath` / 无用 `PluginImpl` 依赖 |
+| Change | Notes |
+|--------|-------|
+| `core_storage/impl/ArchiveStream.cpp` | `TArchiveStream` moved out of `StorageImpl.cpp` |
+| `scripts/check_core_module_deps.py` | Parses CMake link relationships, detects new dependency cycles |
+| **`core_msg`** | `MsgIntf.cpp` / `MsgImpl.cpp` built as an independent library; dropped `ApplicationSpecialPath` / unused `PluginImpl` dependency |
 
-### Phase 3 下一步
+### Phase 3 — next steps
 
-1. ~~**拆 `core_msg`**~~ ✅
-2. **拆 `core_event`** — `EventIntf` / `EventImpl`（依赖 Window/environ，工作量大）
-3. **拆 `core_sysinit` / `core_script`** — 按文档表逐步迁出
-4. **CMake 去环** — `base` 去掉对 visual/sound/environ 的 PRIVATE 链接
-5. **CI 接入** — 在 CI 中运行 `check_core_module_deps.py`
-
----
-
-## 11. Phase 2 第一步进展（2026-06-09）
-
-已完成：
-
-| 改动 | 说明 |
-|------|------|
-| `cpp/core/common/TVPPlatform.h` | 用 `TargetConditionals.h` 替代 cocos 平台宏 |
-| `StorageImpl.cpp` | 移除 `#include <cocos/cocos2d.h>`，`tTVPFileMedia::Open` 读路径优先走 `IFileBackend` |
-| `cpp/core/environ/CocosFileBackend.*` | 移动端经 `FileUtils` 读打包资源 |
-| `TVPInitEnvironFileBackends()` | 桌面：`LocalFileBackend`；移动：`MobileFileBackend`（CMake 条件编译） |
-| 移除 `ChainedFileBackend` | 不再用链式 rollback；移动端在 `MobileFileBackend` 内显式先 Cocos 后 Local |
-| `core_io` 类重命名 | `tTVPLocalFileStream` → `tTVPStdioFileStream`，避免与 `StorageImpl.h` 冲突 |
-| `core_base_module` | `PUBLIC` 链接 `core_io` |
-
-桌面端行为不变（不注册 `CocosFileBackend`，仍走原有 `tTVPLocalFileStream`）。
+1. ~~**Split `core_msg`**~~ ✅
+2. **Split `core_event`** — `EventIntf` / `EventImpl` (depends on Window/environ, significant work)
+3. **Split `core_sysinit` / `core_script`** — migrate step by step per the table above
+4. **De-cycle CMake** — remove base's PRIVATE links to visual/sound/environ
+5. **CI integration** — run `check_core_module_deps.py` in CI
 
 ---
 
-## 12. Phase 1 落地进展（2026-06-09）
+## 11. Phase 2 First-Step Progress (2026-06-09)
 
-已完成的改动：
+Completed:
 
-| 模块 | 路径 | 说明 |
-|------|------|------|
-| `core_io` | `cpp/core/io/` | `IFileBackend`、`StdFileBackend`、`tTVPLocalFileStream` |
-| `archive_xp3` | `cpp/core/archive/xp3/` | `XP3Archive.cpp/h` 从 `base` 迁出 |
-| `core_msg` | `cpp/core/msg/` | 消息字符串、`TVPFormatMessage`、版本信息（头文件仍在 `base/`） |
-| `core_storage_tool` | `cpp/core/storage/tool/` | 工具链专用存储层 + 运行时桩（原 `storage_min`） |
-| `archive_zip` | `cpp/core/archive/zip/` | ZIP 归档 |
-| `archive_7z` | `cpp/core/archive/7z/` | 7z 归档 |
-| `archive_tar` | `cpp/core/archive/tar/` | TAR 归档 |
-| `xp3` 工具 | `tools/xp3/CMakeLists.txt` | 链接 `tjs2 + core_io + core_storage_tool`，不再链接 `core_base_module` |
+| Change | Notes |
+|--------|-------|
+| `cpp/core/common/TVPPlatform.h` | Replaced cocos platform macros with `TargetConditionals.h` |
+| `StorageImpl.cpp` | Removed `#include <cocos/cocos2d.h>`; `tTVPFileMedia::Open` read paths go through `IFileBackend` first |
+| `cpp/core/environ/CocosFileBackend.*` | Mobile reads packed resources through `FileUtils` |
+| `TVPInitEnvironFileBackends()` | Desktop: `LocalFileBackend`; mobile: `MobileFileBackend` (conditional CMake compilation) |
+| Removed `ChainedFileBackend` | No more chained rollback; mobile explicitly tries Cocos first, then Local, inside `MobileFileBackend` |
+| `core_io` class rename | `tTVPLocalFileStream` → `tTVPStdioFileStream`, avoiding a clash with `StorageImpl.h` |
+| `core_base_module` | Now links `core_io` `PUBLIC` |
 
-`core_base_module` 改为 `PUBLIC` 链接 `archive_xp3`，主程序行为不变。
-
-**xp3 工具当前依赖（对比重构前）：**
-
-- 重构前：间接链接 cocos2dx / FFmpeg / OpenCV / 全部 core 模块
-- 重构后：`tjs2`、`zlib`、`fmt`、`spdlog`、`oniguruma`、`Boost::locale`（经 tjs2 传递）
+Desktop behavior is unchanged (no `CocosFileBackend` registered; still the original
+`tTVPLocalFileStream` path).
 
 ---
 
-## 13. 相关文件索引
+## 12. Phase 1 Landing Progress (2026-06-09)
 
-| 路径 | 说明 |
-|------|------|
-| `tools/xp3/main.cpp` | xp3 解包工具入口 |
-| `tools/xp3/CMakeLists.txt` | 当前链接 core_base_module |
-| `cpp/core/base/CMakeLists.txt` | base 模块依赖定义 |
-| `cpp/core/base/XP3Archive.cpp` | XP3 归档实现 |
-| `cpp/core/storage/` | `core_storage`：`StorageIntf`、`UtilStreams`、`ArchiveRegistry`、`ToolStorageInit` |
-| `cpp/core/base/StorageIntf.h` | 存储/VFS 抽象接口（实现已编入 `core_storage`） |
-| `cpp/core/base/impl/StorageImpl.cpp` | 存储实现（含 cocos 耦合） |
-| `cpp/core/CMakeLists.txt` | krkr2core 聚合目标 |
-| `cpp/plugins/xp3filter.cpp` | XP3 解密/过滤插件 |
+Changes completed:
+
+| Module | Path | Notes |
+|--------|------|-------|
+| `core_io` | `cpp/core/io/` | `IFileBackend`, `StdFileBackend`, `tTVPLocalFileStream` |
+| `archive_xp3` | `cpp/core/archive/xp3/` | `XP3Archive.cpp/h` moved out of `base` |
+| `core_msg` | `cpp/core/msg/` | Message strings, `TVPFormatMessage`, version info (headers still in `base/`) |
+| `core_storage_tool` | `cpp/core/storage/tool/` | Tool-chain storage layer + runtime stubs (formerly `storage_min`) |
+| `archive_zip` | `cpp/core/archive/zip/` | ZIP archive |
+| `archive_7z` | `cpp/core/archive/7z/` | 7z archive |
+| `archive_tar` | `cpp/core/archive/tar/` | TAR archive |
+| `xp3` tool | `tools/xp3/CMakeLists.txt` | Links `tjs2 + core_io + core_storage_tool`; no longer links `core_base_module` |
+
+`core_base_module` now links `archive_xp3` `PUBLIC`; main-program behavior unchanged.
+
+**xp3 tool dependencies now (vs before the refactor):**
+
+- Before: indirectly linked cocos2dx / FFmpeg / OpenCV / all core modules
+- After: `tjs2`, `zlib`, `fmt`, `spdlog`, `oniguruma`, `Boost::locale` (transitively via tjs2)
+
+---
+
+## 13. Related File Index
+
+| Path | Description |
+|------|-------------|
+| `tools/xp3/main.cpp` | xp3 extraction tool entry point |
+| `tools/xp3/CMakeLists.txt` | Current linking (tjs2 + core_io + core_storage_tool) |
+| `cpp/core/base/CMakeLists.txt` | base module dependency definitions |
+| `cpp/core/archive/xp3/` | XP3 archive implementation (moved out of base) |
+| `cpp/core/storage/` | `core_storage`: `StorageIntf`, `UtilStreams`, `ArchiveRegistry`, `ToolStorageInit` |
+| `cpp/core/base/StorageIntf.h` | Storage/VFS abstract interfaces (implementation compiled into `core_storage`) |
+| `cpp/core/base/impl/StorageImpl.cpp` | Storage implementation |
+| `cpp/core/CMakeLists.txt` | krkr2core aggregate target |
+| `cpp/plugins/xp3filter.cpp` | XP3 decryption/filter plugin |

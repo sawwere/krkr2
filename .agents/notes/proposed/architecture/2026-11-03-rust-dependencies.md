@@ -1,28 +1,34 @@
-# 原生依赖策略（vcpkg 与 krkr-sys）
+# Native Dependency Strategy (vcpkg and krkr-sys)
 
+<<<<<<<< Updated upstream:.agents/notes/proposed/architecture/2026-11-03-rust-dependencies.md
 Status: proposed
 
 方案材料：本页包含待实施的接口或目录设计，不能作为当前构建与可用功能说明；事实以源码及 docs 为准。
 
 [← 索引](2026-11-03-rust-overview.md)
+========
+[← Index](README.md)
+>>>>>>>> Stashed changes:docs/rust/dependencies.md
 
-Rust 层通过 `krkr-sys-*` 链 vcpkg，避免与 C++ 各引一套 zlib/lz4。
+The Rust layer links vcpkg through `krkr-sys-*`, avoiding a world where C++ and Rust each ship
+their own zlib/lz4.
 
 ---
 
-## 1. 原则：一份 vcpkg，一份链接
+## 1. Principle: one vcpkg, one link
 
-| 依赖 | C++ | Rust |
-|------|-----|------|
+| Dependency | C++ | Rust |
+|------------|-----|------|
 | zlib | `ZLIB::ZLIB` | `krkr-sys-zlib` |
 | lz4 | `lz4::lz4` | `krkr-sys-lz4` |
-| RL、Emote LZ4 流等 | 逐步删除 | **纯 Rust** |
+| RL, Emote LZ4 streams, etc. | Gradually deleted | **pure Rust** |
 
-**禁止：** 同一 so 内 C++ zlib + Rust `flate2/rust_backend` 双份实现。
+**Forbidden:** shipping two copies of zlib inside the same `.so` — C++ zlib plus Rust
+`flate2/rust_backend`.
 
 ---
 
-## 2. krkr-sys-* 实现
+## 2. krkr-sys-* implementation
 
 ```cmake
 corrosion_set_env_vars(krkr_psb
@@ -33,17 +39,21 @@ corrosion_set_env_vars(krkr_psb
 ```toml
 [features]
 default = ["vcpkg-zlib"]
-standalone = ["dep:flate2"]   # 仅独立 CLI
+standalone = ["dep:flate2"]   # standalone CLI only
 ```
 
 ---
 
-## 3. 决策表
+## 3. Decision table
 
-| 情况 | 选择 |
-|------|------|
-| vcpkg 已有且 C++ 仍在用 | `krkr-sys-*` |
-| 格式私有 | `rust/crates/...` 纯 Rust |
-| 独立 CLI | `standalone` feature |
+| Situation | Choice |
+|-----------|--------|
+| Already in vcpkg and still used by C++ | `krkr-sys-*` |
+| Format is private to us | pure Rust in `rust/crates/...` |
+| Standalone CLI | `standalone` feature |
 
+<<<<<<<< Updated upstream:.agents/notes/proposed/architecture/2026-11-03-rust-dependencies.md
 PSB 模块细节见 [modules/psbfile.md](2026-11-03-rust-psbfile.md)。
+========
+For PSB module details see [modules/psbfile.md](modules/psbfile.md).
+>>>>>>>> Stashed changes:docs/rust/dependencies.md

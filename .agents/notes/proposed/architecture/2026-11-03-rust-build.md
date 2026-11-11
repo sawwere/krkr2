@@ -1,14 +1,18 @@
-# CMake 与构建集成
+# CMake and Build Integration
 
+<<<<<<<< Updated upstream:.agents/notes/proposed/architecture/2026-11-03-rust-build.md
 Status: proposed
 
 方案材料：本页包含待实施的接口或目录设计，不能作为当前构建与可用功能说明；事实以源码及 docs 为准。
 
 [← 索引](2026-11-03-rust-overview.md) · 选型见 [ffi.md](2026-11-03-rust-ffi.md)
+========
+[← Index](README.md) · tool choices: [ffi.md](ffi.md)
+>>>>>>>> Stashed changes:docs/rust/build.md
 
 ---
 
-## 1. 入口
+## 1. Entry point
 
 ```cmake
 include(${CMAKE_SOURCE_DIR}/cmake/KrkrRust.cmake)
@@ -22,7 +26,7 @@ target_include_directories(psbfile PRIVATE ${KRKR_BRIDGE_INCLUDE})
 
 ---
 
-## 2. 输出目录
+## 2. Output directories
 
 ```text
 out/linux/debug/
@@ -30,11 +34,11 @@ out/linux/debug/
   bridge/include/krkr/psb.h
 ```
 
-`CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/rust-target`（不用仓库根 `target/`）。
+`CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/rust-target` (not the repository-root `target/`).
 
 ---
 
-## 3. KrkrRust.cmake（概念）
+## 3. KrkrRust.cmake (conceptual)
 
 ```cmake
 function(krkr_rust_crate NAME CRATE)
