@@ -25,6 +25,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     LayerExBase.cpp
     xp3filter.cpp
     packinone.cpp
+    glitcheffect.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
