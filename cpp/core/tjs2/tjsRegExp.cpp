@@ -68,6 +68,96 @@ namespace TJS {
     }
 
     //---------------------------------------------------------------------------
+    // Pattern compatibility shim for Oniguruma.
+    //
+    // Upstream krkr2 compiles RegExp patterns with Boost.Regex, whose \x
+    // escape consumes at most two hex digits and denotes a character code
+    // VALUE (verified against boost::wregex: "[\x0100]" matches U+0001).
+    // Oniguruma's \xHH instead denotes a raw byte, which is invalid under
+    // ONIG_ENCODING_UTF16_LE and aborts compilation with
+    // ONIGERR_TOO_SHORT_MULTIBYTE_CODE ("too short multibyte code string";
+    // seen in the wild: KAGEnvBase.tjs's
+    // /@([a-zA-Z0-9_\x0100-\xFFFF]*)(\.[a-zA-Z0-9_]+)?/ pattern).
+    // This rewrites \xHH into Oniguruma's code-point form \x{HH}, taking at
+    // most two hex digits to keep Boost-compatible semantics. \x{...} is
+    // passed through untouched, and an escaped backslash before 'x' is
+    // respected ("\\x41" stays literal).
+    static ttstr TJSConvertPatternForOnig(const tjs_char *start,
+                                          const tjs_char *end) {
+        ttstr out;
+        const tjs_char *p = start;
+        while(p < end) {
+            if(*p == TJS_W('\\') && p + 1 < end) {
+                if(p[1] == TJS_W('x')) {
+                    const tjs_char *q = p + 2;
+                    if(q < end && *q == TJS_W('{')) {
+                        // braced code point: pass through
+                        out += TJS_W("\\x");
+                        p += 2;
+                        continue;
+                    }
+                    // read at most two hex digits (Boost semantics)
+                    tjs_uint32 v = 0;
+                    tjs_int nd = 0;
+                    while(q < end && nd < 2) {
+                        tjs_char c = *q;
+                        tjs_int h;
+                        if(c >= TJS_W('0') && c <= TJS_W('9'))
+                            h = c - TJS_W('0');
+                        else if(c >= TJS_W('a') && c <= TJS_W('f'))
+                            h = c - TJS_W('a') + 10;
+                        else if(c >= TJS_W('A') && c <= TJS_W('F'))
+                            h = c - TJS_W('A') + 10;
+                        else
+                            break;
+                        v = v * 16 + (tjs_uint32)h;
+                        q++;
+                        nd++;
+                    }
+                    if(nd > 0) {
+                        // emit \x{H..H}
+                        static const tjs_char hexdigits[] =
+                            TJS_W("0123456789ABCDEF");
+                        tjs_char buf[12];
+                        tjs_int bl = 0;
+                        buf[bl++] = TJS_W('\\');
+                        buf[bl++] = TJS_W('x');
+                        buf[bl++] = TJS_W('{');
+                        if(v == 0) {
+                            buf[bl++] = TJS_W('0');
+                        } else {
+                            tjs_char tmp[8];
+                            tjs_int tl = 0;
+                            tjs_uint32 t = v;
+                            while(t) {
+                                tmp[tl++] = hexdigits[t & 0xf];
+                                t >>= 4;
+                            }
+                            while(tl)
+                                buf[bl++] = tmp[--tl];
+                        }
+                        buf[bl++] = TJS_W('}');
+                        out += ttstr(buf, bl);
+                        p = q;
+                        continue;
+                    }
+                    // no hex digit follows: keep the backslash as-is
+                } else {
+                    // escaped pair (e.g. \\); copy both so that "\\x41"
+                    // is not mistaken for an escape
+                    out += *p;
+                    out += p[1];
+                    p += 2;
+                    continue;
+                }
+            }
+            out += *p;
+            p++;
+        }
+        return out;
+    }
+
+    //---------------------------------------------------------------------------
     void replace_regex(tTJSVariant **param, tjs_int numparams,
                        tTJSNI_RegExp *_this, iTJSDispatch2 *objthis,
                        ttstr &res) {
@@ -301,8 +391,10 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ _compile) {
             _this->RegEx = nullptr;
         }
         OnigErrorInfo einfo;
-        int r = onig_new(&(_this->RegEx), (UChar *)exprstart,
-                         (UChar *)(expr.c_str() + expr.length()),
+        ttstr pattern = TJSConvertPatternForOnig(
+            exprstart, expr.c_str() + expr.length());
+        int r = onig_new(&(_this->RegEx), (UChar *)pattern.c_str(),
+                         (UChar *)(pattern.c_str() + pattern.length()),
                          flags & ((ONIG_OPTION_MAXBIT << 1) - 1),
                          ONIG_ENCODING_UTF16_LE, ONIG_SYNTAX_PERL, &einfo);
         if(r) {
@@ -644,8 +736,10 @@ void tTJSNC_RegExp::Compile(tjs_int numparams, tTJSVariant **param,
         _this->RegEx = nullptr;
     }
     OnigErrorInfo einfo;
-    int r = onig_new(&(_this->RegEx), (UChar *)expr.c_str(),
-                     (UChar *)(expr.c_str() + expr.length()),
+    ttstr pattern = TJSConvertPatternForOnig(
+        expr.c_str(), expr.c_str() + expr.length());
+    int r = onig_new(&(_this->RegEx), (UChar *)pattern.c_str(),
+                     (UChar *)(pattern.c_str() + pattern.length()),
                      flags & ((ONIG_OPTION_MAXBIT << 1) - 1),
                      ONIG_ENCODING_UTF16_LE, ONIG_SYNTAX_PERL, &einfo);
     if(r) {

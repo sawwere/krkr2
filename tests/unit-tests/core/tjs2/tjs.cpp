@@ -66,6 +66,8 @@ TEST_CASE("exec tjs2 script") {
 
     SECTION("exec test_with.tjs") { SCRIPT("test_with.tjs"); }
 
+    SECTION("exec test_regexp.tjs") { SCRIPT("test_regexp.tjs"); }
+
     // SECTION("exec test.tjs") {
     //     SCRIPT("test.tjs");
     // }

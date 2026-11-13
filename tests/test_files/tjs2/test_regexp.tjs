@@ -1,0 +1,43 @@
+// RegExp tests.
+//
+// Focus: \x escape compatibility. Upstream krkr2 compiles patterns with
+// Boost.Regex, whose \x consumes at most two hex digits and denotes a
+// character code value. Oniguruma (used here) reads \xHH as a raw byte,
+// which is invalid under UTF-16LE ("too short multibyte code string", seen
+// in a shipped game's KAGEnvBase.tjs). The engine rewrites \xHH to \x{HH}
+// before compiling; these cases pin that behavior down.
+
+// --- \x with 1-2 hex digits: code value semantics (Boost-compatible) ---
+// [\x41-\x5A] must compile and match 'A' but not 'a'.
+var re1 = new RegExp("[\\x41-\\x5A]");
+if(!re1.test("ABC")) throw new Exception("failed: \\x41-\\x5A should match A");
+if(re1.test("abc")) throw new Exception("failed: \\x41-\\x5A must not match a");
+
+// boost::wregex verified semantics: \x consumes at most TWO hex digits,
+// so "[\x0100]" is the character U+0001 followed by literal "00" and
+// matches a string containing \x01.
+var re2 = new RegExp("[\\x0100]");
+if(!re2.test("*\x01*")) throw new Exception("failed: \\x0100 must match U+0001");
+if(re2.test("\x81")) throw new Exception("failed: \\x0100 must not match U+0100");
+
+// --- patterns from real games that previously aborted compilation ---
+// KAGEnvBase.tjs calcRelative pattern
+var re3 = new RegExp("@([a-zA-Z0-9_\\x0100-\\xFFFF]*)(\\.[a-zA-Z0-9_]+)?");
+var m = re3.exec("@:@-100");
+if(m == void) throw new Exception("failed: KAGEnvBase pattern must match '@:@-100'");
+
+// regex literal form must behave the same
+var re4 = /@([a-zA-Z0-9_\x0100-\xFFFF]*)(\.[a-zA-Z0-9_]+)?/;
+if(re4.exec("x@obj.left+3") == void)
+    throw new Exception("failed: literal form must match '@obj.left+3'");
+
+// --- forms that must pass through unchanged ---
+// \x{...} code point form
+var re5 = new RegExp("[\\x{261}]*"); // U+0261
+if(!re5.test("\x261\x261")) throw new Exception("failed: \\x{261} should match U+0261");
+// escaped backslash keeps \x literal ("\\x41" matches backslash+x+4+1)
+var re6 = new RegExp("\\\\x41");
+if(!re6.test("\\x41")) throw new Exception("failed: escaped backslash before x");
+if(re6.test("A")) throw new Exception("failed: escaped backslash must stay literal");
+
+Debug.message("test_regexp.tjs done");
